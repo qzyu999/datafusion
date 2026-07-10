@@ -116,7 +116,12 @@ impl GroupValuesRows {
 }
 
 impl GroupValues for GroupValuesRows {
-    fn intern(&mut self, cols: &[ArrayRef], groups: &mut Vec<usize>) -> Result<()> {
+    fn intern(
+        &mut self,
+        cols: &[ArrayRef],
+        groups: &mut Vec<usize>,
+        hashes: Option<&[u64]>,
+    ) -> Result<()> {
         // Normalize -0.0 → +0.0 so RowConverter (IEEE 754 totalOrder) and
         // primitive hashing both group ±0 together. No-op for non-float
         // columns.
@@ -141,8 +146,12 @@ impl GroupValues for GroupValuesRows {
         // 1.1 Calculate the group keys for the group values
         let batch_hashes = &mut self.hashes_buffer;
         batch_hashes.clear();
-        batch_hashes.resize(n_rows, 0);
-        create_hashes(cols, &self.random_state, batch_hashes)?;
+        if let Some(hashes) = hashes {
+            batch_hashes.extend_from_slice(hashes);
+        } else {
+            batch_hashes.resize(n_rows, 0);
+            create_hashes(cols, &self.random_state, batch_hashes)?;
+        }
 
         for (row, &target_hash) in batch_hashes.iter().enumerate() {
             let entry = self.map.find_mut(target_hash, |(exist_hash, group_idx)| {

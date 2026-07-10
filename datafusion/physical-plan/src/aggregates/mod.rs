@@ -53,7 +53,7 @@ use arrow_schema::FieldRef;
 use datafusion_common::stats::Precision;
 use datafusion_common::{
     Constraint, Constraints, Result, ScalarValue, assert_eq_or_internal_err,
-    internal_err, not_impl_err,
+    internal_err, not_impl_err, project_schema,
 };
 use datafusion_execution::TaskContext;
 use datafusion_execution::memory_pool::MemoryLimit;
@@ -103,6 +103,52 @@ pub fn topk_types_supported(key_type: &DataType, value_type: &DataType) -> bool 
 const AGGREGATION_HASH_SEED: datafusion_common::hash_utils::RandomState =
     // This seed is chosen to be a large 64-bit number
     datafusion_common::hash_utils::RandomState::with_seed(15395726432021054657);
+
+/// Internal partial-aggregation column that carries precomputed group hashes
+/// across repartition and into downstream aggregate stages.
+pub(crate) const GROUP_HASH_COLUMN_NAME: &str = "__datafusion_group_hash";
+pub(crate) fn create_group_hash_array(group_values: &[ArrayRef]) -> Result<ArrayRef> {
+    let num_rows = group_values.first().map(|array| array.len()).unwrap_or(0);
+    let mut hashes = vec![0; num_rows];
+    datafusion_common::hash_utils::create_hashes(
+        group_values,
+        &AGGREGATION_HASH_SEED,
+        &mut hashes,
+    )?;
+    Ok(Arc::new(UInt64Array::from(hashes)))
+}
+
+pub(crate) fn group_hash_field() -> Field {
+    Field::new(GROUP_HASH_COLUMN_NAME, DataType::UInt64, false)
+}
+
+pub(crate) fn schema_with_group_hash(schema: &SchemaRef) -> SchemaRef {
+    let mut fields = schema.fields().to_vec();
+    fields.push(group_hash_field().into());
+    Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()))
+}
+
+pub(crate) fn group_hash_column_index(schema: &Schema) -> Option<usize> {
+    let last_index = schema.fields().len().checked_sub(1)?;
+    (schema.field(last_index).name() == GROUP_HASH_COLUMN_NAME).then_some(last_index)
+}
+
+pub(crate) fn strip_group_hash_column(
+    batch: &RecordBatch,
+) -> Result<(RecordBatch, Option<&UInt64Array>)> {
+    let Some(hash_index) = group_hash_column_index(batch.schema().as_ref()) else {
+        return Ok((batch.clone(), None));
+    };
+    let hashes = batch
+        .column(hash_index)
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .expect("group hash column must be UInt64Array");
+    let projection: Vec<usize> = (0..hash_index).collect();
+    let schema = project_schema(&batch.schema(), Some(&projection))?;
+    let columns = batch.columns()[..hash_index].to_vec();
+    Ok((RecordBatch::try_new(schema, columns)?, Some(hashes)))
+}
 
 /// Whether an aggregate stage consumes raw input data or intermediate
 /// accumulator state from a previous aggregation stage.

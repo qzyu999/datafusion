@@ -32,6 +32,7 @@ use crate::aggregates::grouped_hash_stream::create_group_accumulator;
 use crate::aggregates::order::GroupOrdering;
 use crate::aggregates::{
     AggregateExec, PhysicalGroupBy, aggregate_expressions, evaluate_group_by,
+    schema_with_group_hash,
 };
 
 /// Marker for raw rows -> partial state aggregation.
@@ -340,6 +341,23 @@ impl MaterializedAggregateOutput {
 
     pub(super) fn memory_size(&self) -> usize {
         self.batch.get_array_memory_size()
+    }
+}
+
+pub(super) fn try_new_internal_batch(
+    output_schema: SchemaRef,
+    mut columns: Vec<ArrayRef>,
+) -> Result<RecordBatch> {
+    if columns.len() == output_schema.fields().len() + 1 {
+        Ok(RecordBatch::try_new(
+            schema_with_group_hash(&output_schema),
+            columns,
+        )?)
+    } else {
+        Ok(RecordBatch::try_new(
+            output_schema,
+            std::mem::take(&mut columns),
+        )?)
     }
 }
 

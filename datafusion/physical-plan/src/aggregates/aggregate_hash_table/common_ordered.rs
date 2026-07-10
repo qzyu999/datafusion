@@ -266,9 +266,11 @@ impl<AggrMode> OrderedAggregateTable<AggrMode> {
     ) -> Result<()> {
         for group_values in &evaluated_batch.grouping_set_args {
             let starting_num_groups = self.buffer.group_values.len();
-            self.buffer
-                .group_values
-                .intern(group_values, &mut self.buffer.group_indices)?;
+            self.buffer.group_values.intern(
+                group_values,
+                &mut self.buffer.group_indices,
+                None,
+            )?;
             let total_num_groups = self.buffer.group_values.len();
             if total_num_groups > starting_num_groups {
                 self.buffer.group_ordering.new_groups(

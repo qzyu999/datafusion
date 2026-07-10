@@ -22,7 +22,7 @@ use arrow::record_batch::RecordBatch;
 use datafusion_common::{Result, internal_err};
 use datafusion_expr::EmitTo;
 
-use crate::aggregates::AggregateExec;
+use crate::aggregates::{AggregateExec, strip_group_hash_column};
 
 use super::common::{
     AggregateHashTable, AggregateHashTableBuffer, AggregateHashTableState, FinalMarker,
@@ -123,14 +123,19 @@ impl AggregateHashTable<FinalMarker> {
         &mut self,
         batch: &RecordBatch,
     ) -> Result<()> {
-        let evaluated_batch = self.evaluate_batch(batch)?;
+        let (batch, input_hashes) = strip_group_hash_column(batch)?;
+        let evaluated_batch = self.evaluate_batch(&batch)?;
         let state = self.state.building_mut();
 
         let timer = self.group_by_metrics.aggregation_time.timer();
         for group_values in &evaluated_batch.grouping_set_args {
-            state
-                .group_values
-                .intern(group_values, &mut state.batch_group_indices)?;
+            state.group_values.intern(
+                group_values,
+                &mut state.batch_group_indices,
+                input_hashes
+                    .map(|hashes| hashes.values())
+                    .map(|values| &**values),
+            )?;
             let group_indices = &state.batch_group_indices;
             let total_num_groups = state.group_values.len();
 
